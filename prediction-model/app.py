@@ -5,7 +5,53 @@ import os
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
+import math
 
+def get_corrected_wp(wp_from_model, game_state):
+    
+    quarter = game_state.qtr
+    seconds = game_state.game_seconds_remaining
+    score_diff = game_state.score_differential
+
+    # Only apply correction in the 4th quarter
+    if quarter != 4 or seconds > 300: # 5 mins
+        return wp_from_model
+
+    # --- Create the "Desperation" Factor ---
+    # This number (N) gets bigger as time runs out
+    # We add 1 to avoid dividing by zero
+    # We use abs(score_diff) because "desperation" is high
+    # whether you're up by 3 or down by 3.
+    
+    # Start with a base of 1 (no change)
+    N = 1.0 
+    
+    # Add a "time_pressure" component
+    # This value explodes as seconds -> 0
+    time_pressure = 100 / (seconds + 1) # Arbitrary 100, tune as needed
+    
+    # Add a "score_pressure" component
+    score_pressure = abs(score_diff) / 7 # Scaled by one TD
+    
+    # Combine them.
+    N = 1.0 + (time_pressure * score_pressure * 0.5) # Tune this 0.5
+    
+    # N is now a number like 1.1 (early 4th) or 5.0 (late 4th)
+
+    # --- Apply the "Squash" ---
+    if score_diff > 0:
+        # WINNING: Push WP closer to 1.
+        # 0.80 ^ (1/3) = 0.92 (more confident)
+        corrected_wp = wp_from_model ** (1 / N)
+    elif score_diff < 0:
+        # LOSING: Push WP closer to 0.
+        # 0.20 ^ 3 = 0.008 (less confident)
+        corrected_wp = wp_from_model ** N
+    else:
+        # TIED: The model is probably fine.
+        corrected_wp = wp_from_model
+
+    return corrected_wp
 # --- Pydantic Model for Input Validation ---
 # This defines the structure of the JSON your API will expect.
 class Scenario(BaseModel):
@@ -62,9 +108,10 @@ async def predict_scenario(scenario: Scenario):
     """
     try:
         probability = predict_win_chance(win_prob_model, scenario)
+        corr = get_corrected_wp(probability, scenario)
         return {
-            "possession_team_win_probability": probability,
-            "possession_team_win_percentage": f"{probability * 100:.2f}%"
+            "possession_team_win_probability": corr,
+            "possession_team_win_percentage": f"{corr * 100:.2f}%"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

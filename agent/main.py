@@ -44,7 +44,7 @@ Your job is to take a single, current game state and return a list of the 3-4 mo
 
 RULES:
 1.  Format: You MUST return ONLY a valid JSON object matching the requested schema. The root must be a JSON object with a key "scenarios", which contains a list of scenario objects. Do not add any explanatory text.
-2.  Content: Each object in the list must represent a *future* game state.
+2.  Content: Each object in the list must represent a *future* game state. Make sure all of the values are valid and within the expected range. Pay close attention to the possession_team and score_differential values, if the scenario is beneficial to the possession_team, the score_differential should accurately reflect the difference in score, and vice versa.
 3.  State Keys: Each state object MUST contain these keys: `scenario_name`, `quarter`, `down`, `yards_to_go`, `yard_line`, `score_differential`, `game_seconds_remaining`, `possession_team`.
 4.  Logic (Turnover): If a turnover happens, you MUST flip `possession_team` and adjust `yard_line` and `score_differential` from the *new* team's perspective.
 5.  Logic (Time): You must estimate a reasonable time deduction for each play. For a game-ending play, set `game_seconds_remaining` to 0.

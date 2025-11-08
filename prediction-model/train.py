@@ -19,7 +19,7 @@ def load_and_prep_data():
     Loads and preprocesses the NFL play-by-play data using Polars.
     """
     print("Loading Play-by-Play data (2010-2023)...")
-    df = nfl.load_pbp(range(2010, 2024))
+    df = nfl.load_pbp(2024)
     print("Data loaded. Preprocessing...")
 
     columns = [
@@ -66,12 +66,18 @@ def train_win_probability_model(data_pl: pl.DataFrame):
     print("Training win probability model...")
     data_pd = data_pl.to_pandas()
     train, _ = train_test_split(data_pd, test_size=0.2, random_state=123)
-    formula = 'poswins ~ qtr + down + ydstogo + yardline_100 + score_differential + game_seconds_remaining'
+
+    # --- THIS IS THE CHANGE ---
+    # We added the interaction term at the end
+    formula = 'poswins ~ qtr + down + ydstogo + yardline_100 + score_differential + game_seconds_remaining + score_differential * game_seconds_remaining'
+    # --------------------------
+
+    print(f"Using new formula: {formula}")
 
     model = smf.glm(formula=formula, data=train, family=sm.families.Binomial())
     result = model.fit()
     
-    print("Model training complete.")
+    print("Tuned model training complete.")
     return result
 
 def main():
@@ -79,17 +85,17 @@ def main():
     Main function to train and save the model.
     """
     if os.path.exists(MODEL_FILE):
-        print(f"Model file '{MODEL_FILE}' already exists. Skipping training.")
+        print(f"Model file '{MODEL_FILE}' already exists. Please delete it to re-train.")
         return
 
     print("--- Model Not Found: Starting Training ---")
     pbp_data = load_and_prep_data()
     win_prob_model = train_win_probability_model(pbp_data)
     
-    print(f"Saving model to {MODEL_FILE}...")
+    print(f"Saving tuned model to {MODEL_FILE}...")
     with open(MODEL_FILE, 'wb') as f:
         pickle.dump(win_prob_model, f)
-    print("Model saved successfully.")
+    print("Tuned model saved successfully.")
 
 if __name__ == "__main__":
     main()
