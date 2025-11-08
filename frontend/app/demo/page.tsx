@@ -29,7 +29,6 @@ export default function DemoPage() {
       return;
     }
 
-    videoRef.current.currentTime = 680;
     const playPromise = videoRef.current.play();
 
     if (playPromise !== undefined) {
@@ -100,7 +99,7 @@ export default function DemoPage() {
             {videoSrc ? (
               <video
                 ref={videoRef}
-                src={videoSrc + "#t=680,705"}
+                src={videoSrc}
                 className="h-full w-full object-cover"
                 controls
                 muted
