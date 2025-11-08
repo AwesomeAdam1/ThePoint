@@ -2,10 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-const FALLBACK_VIDEO_URL =
-  "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4";
-
-const START_ENDPOINT = "/api/demo/start";
+const START_ENDPOINT = "/api/getOutcomes";
+const START_INTERVAL_SECONDS = 9890;
 
 function timestamp() {
   return new Date().toLocaleTimeString([], {
@@ -23,6 +21,7 @@ export default function DemoPage() {
   const [logs, setLogs] = useState<string[]>([]);
   const [isStarting, setIsStarting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const scheduledRequestsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   useEffect(() => {
     if (!videoSrc || !videoRef.current) {
@@ -48,48 +47,118 @@ export default function DemoPage() {
     setLogs((prev) => [...prev, `[${timestamp()}] ${entry}`]);
   }, []);
 
+  const clearScheduledRequests = useCallback(() => {
+    scheduledRequestsRef.current.forEach((timeoutId) => {
+      clearTimeout(timeoutId);
+    });
+    scheduledRequestsRef.current = [];
+  }, []);
+
+  const sendStartRequest = useCallback(
+    async (
+      options?: { label?: string; suppressErrorMessage?: boolean },
+      time: number
+    ) => {
+      const { label, suppressErrorMessage } = options ?? {};
+      const controller = new AbortController();
+
+      try {
+        appendLog(`Sending demo request${label ? ` (${label})` : ""}…`);
+
+        const response = await fetch(START_ENDPOINT, {
+          method: "POST",
+          signal: controller.signal,
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ start: START_INTERVAL_SECONDS + time }),
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(
+            errorText || `Request failed with status ${response.status}`
+          );
+        }
+
+        const payload = await response.json();
+        appendLog(
+          payload.message
+            ? `${payload.message}${label ? ` (${label})` : ""}`
+            : `Demo endpoint responded successfully${
+                label ? ` (${label})` : ""
+              }.`
+        );
+
+        return true;
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Unknown error occurred";
+        appendLog(
+          `Failed to send demo request${label ? ` (${label})` : ""}: ${message}`
+        );
+        if (!suppressErrorMessage) {
+          setErrorMessage(
+            "Something went wrong while starting the demo. Please try again."
+          );
+        }
+        return false;
+      } finally {
+        controller.abort();
+      }
+    },
+    [appendLog]
+  );
+
+  const scheduleFollowUpRequest = useCallback(
+    (delayMs: number, label: string) => {
+      const timeoutId = setTimeout(() => {
+        scheduledRequestsRef.current = scheduledRequestsRef.current.filter(
+          (existingId) => existingId !== timeoutId
+        );
+        void sendStartRequest(
+          { label, suppressErrorMessage: true },
+          delayMs / 1000
+        );
+      }, delayMs);
+
+      scheduledRequestsRef.current.push(timeoutId);
+    },
+    [sendStartRequest]
+  );
+
+  useEffect(() => {
+    return () => {
+      clearScheduledRequests();
+    };
+  }, [clearScheduledRequests]);
+
   const handleStart = useCallback(async () => {
     if (isStarting) {
       return;
     }
 
+    clearScheduledRequests();
     setIsStarting(true);
     setErrorMessage(null);
     appendLog("Starting demo…");
     setVideoSrc(videoUrl);
 
-    const controller = new AbortController();
+    /*const wasSuccessful = await sendStartRequest();
+    if (wasSuccessful) {
+      appendLog("Follow-up demo requests scheduled.");
+    }*/
 
-    try {
-      const response = await fetch(START_ENDPOINT, {
-        method: "POST",
-        signal: controller.signal,
-        headers: {
-          "Content-Type": "application/json",
-        },
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(
-          errorText || `Request failed with status ${response.status}`
-        );
-      }
-
-      const payload = await response.json();
-      appendLog(payload.message ?? "Demo endpoint responded successfully.");
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Unknown error occurred";
-      appendLog(`Failed to start demo: ${message}`);
-      setErrorMessage(
-        "Something went wrong while starting the demo. Please try again."
-      );
-    } finally {
-      controller.abort();
-      setIsStarting(false);
-    }
-  }, [appendLog, isStarting, videoUrl]);
+    scheduleFollowUpRequest(10_000, "T+10s");
+    scheduleFollowUpRequest(20_000, "T+20s");
+    setIsStarting(false);
+  }, [
+    appendLog,
+    clearScheduledRequests,
+    isStarting,
+    scheduleFollowUpRequest,
+    videoUrl,
+  ]);
 
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-900">
