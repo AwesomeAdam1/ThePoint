@@ -16,10 +16,7 @@ function timestamp() {
 }
 
 export default function DemoPage() {
-  const videoUrl = useMemo(
-    () => process.env.NEXT_PUBLIC_DEMO_VIDEO_URL ?? FALLBACK_VIDEO_URL,
-    []
-  );
+  const videoUrl = useMemo(() => "/demo-vid1.mp4", []);
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   const [videoSrc, setVideoSrc] = useState<string>("");
@@ -32,7 +29,7 @@ export default function DemoPage() {
       return;
     }
 
-    videoRef.current.currentTime = 0;
+    videoRef.current.currentTime = 680;
     const playPromise = videoRef.current.play();
 
     if (playPromise !== undefined) {
@@ -103,7 +100,7 @@ export default function DemoPage() {
             {videoSrc ? (
               <video
                 ref={videoRef}
-                src={videoSrc}
+                src={videoSrc + "#t=680,705"}
                 className="h-full w-full object-cover"
                 controls
                 muted
