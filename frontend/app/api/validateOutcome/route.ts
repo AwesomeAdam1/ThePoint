@@ -31,7 +31,7 @@ const INTERNAL_API_BASE_URL =
 
 const GEMINI_MODEL =
   process.env.GEMINI_VALIDATION_MODEL ?? "gemini-2.0-flash-001";
-const GEMINI_API_KEY = "AIzaSyAIh-Tkf1SEUeHUvJBXC1zjUXcl1fVlVug";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 const geminiClient = GEMINI_API_KEY
   ? new GoogleGenerativeAI(GEMINI_API_KEY)
