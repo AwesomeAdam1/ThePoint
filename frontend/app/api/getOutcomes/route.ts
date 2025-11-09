@@ -22,6 +22,8 @@ type OutcomeResponse = {
   winProb: number;
   probShift: number;
   error?: string;
+  isCorrect: boolean;
+  scenario?: ScenarioResponse;
 };
 
 type PlayByPlayResponse = {
@@ -52,7 +54,7 @@ const INTERNAL_API_BASE_URL =
   process.env.INTERNAL_API_BASE_URL ??
   process.env.NEXT_PUBLIC_APP_URL ??
   process.env.NEXT_PUBLIC_BASE_URL ??
-  "http://localhost:3001";
+  "http://localhost:3000";
 
 const GENERATE_SCENARIOS_URL =
   process.env.GENERATE_SCENARIOS_URL ??
@@ -177,6 +179,93 @@ const deriveGameStateFromPlay = (
   };
 };
 
+const calculateScoreFromPlays = (
+  plays: Play[],
+  homeTeam: string,
+  upToPlayIndex: number,
+  initialScore?: { home: number; away: number }
+): { home: number; away: number } => {
+  let homeScore = initialScore?.home ?? 0;
+  let awayScore = initialScore?.away ?? 0;
+  const normalizedHomeTeam = homeTeam.toUpperCase();
+
+  // Find the latest scoring play up to the specified index
+  for (let i = 0; i <= upToPlayIndex && i < plays.length; i++) {
+    const play = plays[i];
+    if (play.ScoringPlay) {
+      const scoringPlay = play.ScoringPlay;
+      homeScore = ensureFiniteNumber(scoringPlay.HomeScore, homeScore);
+      awayScore = ensureFiniteNumber(scoringPlay.AwayScore, awayScore);
+    }
+  }
+
+  return { home: homeScore, away: awayScore };
+};
+
+const compareScenarioWithPlay = (
+  scenario: ScenarioResponse,
+  actualGameState: GameState,
+  tolerance: {
+    yardLine?: number;
+    yardsToGo?: number;
+    gameSeconds?: number;
+  } = {}
+): boolean => {
+  const yardLineTolerance = tolerance.yardLine ?? 5;
+  const yardsToGoTolerance = tolerance.yardsToGo ?? 2;
+  const gameSecondsTolerance = tolerance.gameSeconds ?? 10;
+
+  // Compare possession team (must match exactly)
+  if (
+    scenario.possession_team.toUpperCase() !==
+    actualGameState.possession_team.toUpperCase()
+  ) {
+    return false;
+  }
+
+  // Compare quarter (must match exactly)
+  if (scenario.quarter !== actualGameState.quarter) {
+    return false;
+  }
+
+  // Compare down (must match exactly)
+  if (scenario.down !== actualGameState.down) {
+    return false;
+  }
+
+  // Compare yards to go (with tolerance)
+  if (
+    Math.abs(scenario.yards_to_go - actualGameState.yards_to_go) >
+    yardsToGoTolerance
+  ) {
+    return false;
+  }
+
+  // Compare yard line (with tolerance)
+  if (
+    Math.abs(scenario.yard_line - actualGameState.yard_line) >
+    yardLineTolerance
+  ) {
+    return false;
+  }
+
+  // Compare game seconds remaining (with tolerance)
+  if (
+    Math.abs(
+      scenario.game_seconds_remaining - actualGameState.game_seconds_remaining
+    ) > gameSecondsTolerance
+  ) {
+    return false;
+  }
+
+  // Compare score differential (with tolerance of 1 point to account for scoring)
+  if (Math.abs(scenario.score_differential - actualGameState.score_differential) > 1) {
+    return false;
+  }
+
+  return true;
+};
+
 const mapScenarioToOutcomePayload = (scenario: ScenarioResponse) => ({
   qtr: scenario.quarter,
   down: Number.isFinite(scenario.down) ? scenario.down : Number(scenario.down),
@@ -290,8 +379,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const outcomes = await Promise.all(
-      scenarios.map(async (scenario) => {
+    const outcomes: OutcomeResponse[] = await Promise.all(
+      scenarios.map(async (scenario): Promise<OutcomeResponse> => {
         const payload = mapScenarioToOutcomePayload(scenario);
 
         try {
@@ -308,7 +397,9 @@ export async function POST(request: NextRequest) {
               error: `Failed to fetch outcome from port 8000 (status ${response.status})`,
               winProb: Number.NaN,
               probShift: Number.NaN,
-            } satisfies OutcomeResponse;
+              scenario,
+              isCorrect: false,
+            };
           }
 
           const data = await response.json();
@@ -322,7 +413,9 @@ export async function POST(request: NextRequest) {
             probShift:
               originalPossessionWinProbability -
               baseProb.possession_team_win_probability,
-          } satisfies OutcomeResponse;
+            scenario,
+            isCorrect: false,
+          };
         } catch (error) {
           return {
             scenario_name: scenario.scenario_name,
@@ -332,10 +425,59 @@ export async function POST(request: NextRequest) {
                 : "Unknown error fetching outcome from port 8000",
             winProb: Number.NaN,
             probShift: Number.NaN,
-          } satisfies OutcomeResponse;
+            scenario,
+            isCorrect: false,
+          };
         }
       })
     );
+
+    // Compare scenarios with actual play-by-play data
+    // Look at plays after the first play to see which scenario matches
+    const initialScore =
+      playByPlayPayload.currentScore ?? { home: 0, away: 0 };
+    let correctScenarioIndex: number | null = null;
+    if (visiblePlays.length > 1) {
+      // Try to match scenarios with subsequent plays
+      for (let playIndex = 1; playIndex < Math.min(visiblePlays.length, 5); playIndex++) {
+        const play = visiblePlays[playIndex];
+        const score = calculateScoreFromPlays(
+          visiblePlays,
+          PLACEHOLDER_HOME_TEAM,
+          playIndex,
+          initialScore
+        );
+        const actualGameState = deriveGameStateFromPlay(
+          play,
+          PLACEHOLDER_HOME_TEAM,
+          score
+        );
+
+        // Check each scenario to see if it matches this play
+        for (let scenarioIndex = 0; scenarioIndex < outcomes.length; scenarioIndex++) {
+          const outcome = outcomes[scenarioIndex];
+          if (outcome.scenario && !outcome.isCorrect) {
+            const isMatch = compareScenarioWithPlay(
+              outcome.scenario,
+              actualGameState
+            );
+            if (isMatch) {
+              correctScenarioIndex = scenarioIndex;
+              outcomes[scenarioIndex] = {
+                ...outcome,
+                isCorrect: true as boolean,
+              };
+              break;
+            }
+          }
+        }
+
+        // If we found a match, stop looking
+        if (correctScenarioIndex !== null) {
+          break;
+        }
+      }
+    }
 
     return NextResponse.json(outcomes);
   } catch (error) {
