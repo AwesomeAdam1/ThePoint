@@ -20,6 +20,7 @@ type ScenarioResponse = GameState & {
 type OutcomeResponse = {
   scenario_name: string;
   winProb: number;
+  probShift: number;
   error?: string;
 };
 
@@ -249,6 +250,18 @@ export async function POST(request: NextRequest) {
     );
 
     console.log(gameState);
+    const baseProb = await (
+      await fetch(PREDICT_OUTCOME_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          mapScenarioToOutcomePayload({
+            ...gameState,
+            scenario_name: "Base Prob",
+          })
+        ),
+      })
+    ).json();
 
     const scenarioResponse = await fetch(GENERATE_SCENARIOS_URL, {
       method: "POST",
@@ -294,6 +307,7 @@ export async function POST(request: NextRequest) {
               scenario_name: scenario.scenario_name,
               error: `Failed to fetch outcome from port 8000 (status ${response.status})`,
               winProb: Number.NaN,
+              probShift: Number.NaN,
             } satisfies OutcomeResponse;
           }
 
@@ -305,6 +319,9 @@ export async function POST(request: NextRequest) {
           return {
             scenario_name: scenario.scenario_name,
             winProb: originalPossessionWinProbability,
+            probShift:
+              originalPossessionWinProbability -
+              baseProb.possession_team_win_probability,
           } satisfies OutcomeResponse;
         } catch (error) {
           return {
@@ -314,6 +331,7 @@ export async function POST(request: NextRequest) {
                 ? error.message
                 : "Unknown error fetching outcome from port 8000",
             winProb: Number.NaN,
+            probShift: Number.NaN,
           } satisfies OutcomeResponse;
         }
       })
