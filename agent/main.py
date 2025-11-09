@@ -40,7 +40,7 @@ class GameState(BaseModel):
 # --- 3. The Agent's "Brain" (System Prompt) ---
 SYSTEM_PROMPT = """
 You are a 'Football Scenario Generator' for a live sports data system.
-Your job is to take a single, current game state and return a list of the 3-4 most critical, plausible outcomes of the *next* play.
+Your job is to take a single, current game state and return a list of the 3-4 most critical, plausible outcomes of the *next* play. MAKE SURE to Include an attempted and failed field goal as a scenario
 
 RULES:
 1.  Format: You MUST return ONLY a valid JSON object matching the requested schema. The root must be a JSON object with a key "scenarios", which contains a list of scenario objects. Do not add any explanatory text.

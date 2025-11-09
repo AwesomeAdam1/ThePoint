@@ -40,6 +40,10 @@ export interface Play {
   IsScoringPlay: boolean;
   ScoringPlay: ScoringPlay | null;
   PlayStats: unknown[];
+  Score?: {
+    HomeScore?: number;
+    AwayScore?: number;
+  } | null;
 }
 
 // The API returns an array of plays directly

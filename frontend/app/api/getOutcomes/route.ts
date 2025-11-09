@@ -1,41 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import type { Play } from "@/types/playbyplay";
-
-type GameState = {
-  possession_team: string;
-  opponent_team: string;
-  quarter: number;
-  down: number;
-  yards_to_go: number;
-  yard_line: number;
-  score_differential: number;
-  game_seconds_remaining: number;
-};
-
-type ScenarioResponse = GameState & {
-  scenario_name: string;
-};
-
-type OutcomeResponse = {
-  scenario_name: string;
-  winProb: number;
-  probShift: number;
-  error?: string;
-  isCorrect: boolean;
-  scenario?: ScenarioResponse;
-};
-
-type PlayByPlayResponse = {
-  mode: "live-simulated" | "full";
-  currentScore?: {
-    home: number;
-    away: number;
-  };
-  visiblePlays?: Play[];
-  plays?: Play[];
-  totalPlays?: number;
-};
+import {
+  calculateScoreFromPlays,
+  compareScenarioWithGameState,
+  deriveGameStateFromPlay,
+  mapScenarioToOutcomePayload,
+  PLACEHOLDER_HOME_TEAM,
+  PLACEHOLDER_SEASON,
+  PLACEHOLDER_WEEK,
+  START_WINDOW_SECONDS,
+  type OutcomeResponse,
+  type PlayByPlayResponse,
+  type ScenarioState,
+} from "@/lib/gameState";
 
 type StartIntervalBody =
   | number
@@ -44,11 +21,6 @@ type StartIntervalBody =
       startInterval?: number;
       startingInterval?: number;
     };
-
-const PLACEHOLDER_SEASON = "2024";
-const PLACEHOLDER_WEEK = "10";
-const PLACEHOLDER_HOME_TEAM = "den";
-const START_WINDOW_SECONDS = 100;
 
 const INTERNAL_API_BASE_URL =
   process.env.INTERNAL_API_BASE_URL ??
@@ -62,21 +34,6 @@ const GENERATE_SCENARIOS_URL =
 
 const PREDICT_OUTCOME_URL =
   process.env.PREDICT_OUTCOME_URL ?? "http://localhost:8000/predict";
-
-const ensureFiniteNumber = (value: unknown, fallback = 0): number => {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-
-  if (typeof value === "string" && value.trim().length > 0) {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) {
-      return parsed;
-    }
-  }
-
-  return fallback;
-};
 
 const extractStartInterval = (body: StartIntervalBody): number | null => {
   if (typeof body === "number" && Number.isFinite(body)) {
@@ -105,175 +62,6 @@ const extractStartInterval = (body: StartIntervalBody): number | null => {
 
   return null;
 };
-
-const computeGameSecondsRemaining = (
-  quarter: number,
-  minutesRemaining: number,
-  secondsRemaining: number
-) => {
-  const sanitizedQuarter = Number.isFinite(quarter) ? Math.max(1, quarter) : 4;
-  const sanitizedMinutes = ensureFiniteNumber(minutesRemaining, 0);
-  const sanitizedSeconds = ensureFiniteNumber(secondsRemaining, 0);
-  const remainingThisQuarter = Math.max(
-    0,
-    sanitizedMinutes * 60 + sanitizedSeconds
-  );
-
-  if (sanitizedQuarter >= 4) {
-    return remainingThisQuarter;
-  }
-
-  const quartersRemaining = Math.max(0, 4 - sanitizedQuarter);
-  const secondsPerQuarter = 15 * 60;
-
-  return remainingThisQuarter + quartersRemaining * secondsPerQuarter;
-};
-
-const deriveGameStateFromPlay = (
-  play: Play,
-  homeTeam: string,
-  score: { home: number; away: number }
-): GameState => {
-  const normalizedHomeTeam = homeTeam.toUpperCase();
-  const possessionTeam = play.Team ?? normalizedHomeTeam;
-  const opponentTeam =
-    play.Opponent ??
-    (possessionTeam === normalizedHomeTeam ? "AWAY" : normalizedHomeTeam);
-
-  const quarterFromName = Number.parseInt(play.QuarterName, 10);
-  const quarter = Number.isFinite(quarterFromName)
-    ? quarterFromName
-    : Math.max(1, Math.min(4, ensureFiniteNumber(play.QuarterID, 4)));
-
-  const down = Math.max(1, ensureFiniteNumber(play.Down, 1));
-  const yardsToGo = Math.max(0, ensureFiniteNumber(play.Distance, 0));
-  const yardLine = Math.max(
-    0,
-    Number.isFinite(play.YardsToEndZone)
-      ? play.YardsToEndZone
-      : ensureFiniteNumber(play.YardLine, 0)
-  );
-
-  const possessionIsHome = possessionTeam.toUpperCase() === normalizedHomeTeam;
-
-  const possessionScore = possessionIsHome
-    ? ensureFiniteNumber(score.home, 0)
-    : ensureFiniteNumber(score.away, 0);
-  const opponentScore = possessionIsHome
-    ? ensureFiniteNumber(score.away, 0)
-    : ensureFiniteNumber(score.home, 0);
-
-  return {
-    possession_team: possessionTeam,
-    opponent_team: opponentTeam,
-    quarter,
-    down,
-    yards_to_go: yardsToGo,
-    yard_line: yardLine,
-    score_differential: -2,
-    game_seconds_remaining: computeGameSecondsRemaining(
-      quarter,
-      ensureFiniteNumber(play.TimeRemainingMinutes, 0),
-      ensureFiniteNumber(play.TimeRemainingSeconds, 0)
-    ),
-  };
-};
-
-const calculateScoreFromPlays = (
-  plays: Play[],
-  homeTeam: string,
-  upToPlayIndex: number,
-  initialScore?: { home: number; away: number }
-): { home: number; away: number } => {
-  let homeScore = initialScore?.home ?? 0;
-  let awayScore = initialScore?.away ?? 0;
-  const normalizedHomeTeam = homeTeam.toUpperCase();
-
-  // Find the latest scoring play up to the specified index
-  for (let i = 0; i <= upToPlayIndex && i < plays.length; i++) {
-    const play = plays[i];
-    if (play.ScoringPlay) {
-      const scoringPlay = play.ScoringPlay;
-      homeScore = ensureFiniteNumber(scoringPlay.HomeScore, homeScore);
-      awayScore = ensureFiniteNumber(scoringPlay.AwayScore, awayScore);
-    }
-  }
-
-  return { home: homeScore, away: awayScore };
-};
-
-const compareScenarioWithPlay = (
-  scenario: ScenarioResponse,
-  actualGameState: GameState,
-  tolerance: {
-    yardLine?: number;
-    yardsToGo?: number;
-    gameSeconds?: number;
-  } = {}
-): boolean => {
-  const yardLineTolerance = tolerance.yardLine ?? 5;
-  const yardsToGoTolerance = tolerance.yardsToGo ?? 2;
-  const gameSecondsTolerance = tolerance.gameSeconds ?? 10;
-
-  // Compare possession team (must match exactly)
-  if (
-    scenario.possession_team.toUpperCase() !==
-    actualGameState.possession_team.toUpperCase()
-  ) {
-    return false;
-  }
-
-  // Compare quarter (must match exactly)
-  if (scenario.quarter !== actualGameState.quarter) {
-    return false;
-  }
-
-  // Compare down (must match exactly)
-  if (scenario.down !== actualGameState.down) {
-    return false;
-  }
-
-  // Compare yards to go (with tolerance)
-  if (
-    Math.abs(scenario.yards_to_go - actualGameState.yards_to_go) >
-    yardsToGoTolerance
-  ) {
-    return false;
-  }
-
-  // Compare yard line (with tolerance)
-  if (
-    Math.abs(scenario.yard_line - actualGameState.yard_line) >
-    yardLineTolerance
-  ) {
-    return false;
-  }
-
-  // Compare game seconds remaining (with tolerance)
-  if (
-    Math.abs(
-      scenario.game_seconds_remaining - actualGameState.game_seconds_remaining
-    ) > gameSecondsTolerance
-  ) {
-    return false;
-  }
-
-  // Compare score differential (with tolerance of 1 point to account for scoring)
-  if (Math.abs(scenario.score_differential - actualGameState.score_differential) > 1) {
-    return false;
-  }
-
-  return true;
-};
-
-const mapScenarioToOutcomePayload = (scenario: ScenarioResponse) => ({
-  qtr: scenario.quarter,
-  down: Number.isFinite(scenario.down) ? scenario.down : Number(scenario.down),
-  ydstogo: scenario.yards_to_go,
-  yardline_100: scenario.yard_line,
-  score_differential: scenario.score_differential,
-  game_seconds_remaining: scenario.game_seconds_remaining,
-});
 
 export async function POST(request: NextRequest) {
   try {
@@ -367,7 +155,7 @@ export async function POST(request: NextRequest) {
     }
 
     const scenarioPayload = (await scenarioResponse.json()) as {
-      scenarios?: ScenarioResponse[];
+      scenarios?: ScenarioState[];
     };
 
     const scenarios = scenarioPayload?.scenarios;
@@ -434,12 +222,15 @@ export async function POST(request: NextRequest) {
 
     // Compare scenarios with actual play-by-play data
     // Look at plays after the first play to see which scenario matches
-    const initialScore =
-      playByPlayPayload.currentScore ?? { home: 0, away: 0 };
+    const initialScore = playByPlayPayload.currentScore ?? { home: 0, away: 0 };
     let correctScenarioIndex: number | null = null;
     if (visiblePlays.length > 1) {
       // Try to match scenarios with subsequent plays
-      for (let playIndex = 1; playIndex < Math.min(visiblePlays.length, 5); playIndex++) {
+      for (
+        let playIndex = 1;
+        playIndex < Math.min(visiblePlays.length, 5);
+        playIndex++
+      ) {
         const play = visiblePlays[playIndex];
         const score = calculateScoreFromPlays(
           visiblePlays,
@@ -454,10 +245,14 @@ export async function POST(request: NextRequest) {
         );
 
         // Check each scenario to see if it matches this play
-        for (let scenarioIndex = 0; scenarioIndex < outcomes.length; scenarioIndex++) {
+        for (
+          let scenarioIndex = 0;
+          scenarioIndex < outcomes.length;
+          scenarioIndex++
+        ) {
           const outcome = outcomes[scenarioIndex];
           if (outcome.scenario && !outcome.isCorrect) {
-            const isMatch = compareScenarioWithPlay(
+            const isMatch = compareScenarioWithGameState(
               outcome.scenario,
               actualGameState
             );
@@ -479,7 +274,11 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    return NextResponse.json(outcomes);
+    return NextResponse.json({
+      outcomes,
+      originalGameState: gameState,
+      startIntervalSeconds: startInterval,
+    });
   } catch (error) {
     console.error("Error handling getOutcomes request:", error);
     return NextResponse.json(
